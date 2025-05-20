@@ -2,3 +2,12 @@
 name = "utokyo-FSC-IS4029L1-assignment-a1"
 version = "0.0.0"
 edition = "2024"
+
+[dependencies]
+color-eyre = "0.6.4"
+futures = "0.3.31"
+nalgebra = "0.33.2"
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
+wgpu = "25.0.0"
+winit = "0.30.10"
