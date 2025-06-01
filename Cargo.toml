@@ -4,6 +4,7 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
+catppuccin = "2.5.1"
 color-eyre = "0.6.4"
 futures = "0.3.31"
 nalgebra = "0.33.2"
