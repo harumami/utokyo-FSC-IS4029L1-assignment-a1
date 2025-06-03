@@ -193,18 +193,19 @@ impl App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.context.is_none() {
-            Self::handle_result(
-                Context::new(
-                    event_loop,
-                    self.args.max_bones,
-                    self.args.ik_steps,
-                    self.args.ik_sens,
-                    PALETTE[self.args.theme_flavor].colors,
-                )
-                .map(|context| self.context = Option::Some(context)),
-            );
+        if self.context.is_some() {
+            return;
         }
+        Self::handle_result(
+            Context::new(
+                event_loop,
+                self.args.max_bones,
+                self.args.ik_steps,
+                self.args.ik_sens,
+                PALETTE[self.args.theme_flavor].colors,
+            )
+            .map(|context| self.context = Option::Some(context)),
+        );
     }
 
     fn window_event(
@@ -307,128 +308,128 @@ impl Context {
         window_id: WindowId,
         event: WindowEvent,
     ) -> Result<()> {
-        match self.window.id() == window_id {
-            true => match event {
-                WindowEvent::Resized(PhysicalSize {
-                    width,
-                    height,
-                }) => self.renderer.configure(Point2::new(width, height)),
-                WindowEvent::CloseRequested => {
-                    info!("exit event loop");
-                    event_loop.exit();
-                },
-                WindowEvent::KeyboardInput {
-                    event:
-                        KeyEvent {
-                            logical_key: Key::Named(named_key),
-                            state: ElementState::Pressed,
-                            repeat: false,
-                            ..
-                        },
-                    ..
-                } => match named_key {
-                    NamedKey::Space => {
-                        self.mode = match self.mode {
-                            Mode::Edit => Mode::Follow,
-                            Mode::Follow => Mode::Edit,
-                        }
-                    },
-                    NamedKey::Backspace if matches!(self.mode, Mode::Edit) => {
-                        if self.bones.pop().is_none() && self.root.take().is_none() {
-                            debug!("there is no linkage");
-                        }
-                    },
-                    _ => {},
-                },
-                WindowEvent::CursorMoved {
-                    position, ..
-                } => self.cursor = position,
-                WindowEvent::MouseInput {
-                    state: ElementState::Pressed,
-                    button: MouseButton::Left,
-                    ..
-                } if matches!(self.mode, Mode::Edit) => match self.bones.len() < self.max_bones {
-                    true => match self.root {
-                        Option::Some(root) => {
-                            self.bones.push(self.bones.as_bone(root, self.cursor()))
-                        },
-                        Option::None => self.root = Option::Some(self.cursor()),
-                    },
-                    false => debug!("buffer is full"),
-                },
-                WindowEvent::RedrawRequested => {
-                    if let Option::Some(root) = self.root {
-                        let cursor = self.cursor();
+        if self.window.id() != window_id {
+            warn!("unknown window");
+            return Result::Ok(());
+        }
 
-                        if matches!(self.mode, Mode::Follow) {
-                            for _ in 0..self.ik_steps {
-                                self.bones
-                                    .ik(self.bones.as_bone(root, cursor), self.ik_sens);
-                            }
-                        }
-
-                        let node_rect = Rect {
-                            size: Point2::from(Vector2::repeat(0.02)),
-                            angle: 0.0,
-                            center: Point2::origin(),
-                            color: self.linkage_color,
-                        };
-
-                        self.rects[self.bones.len()] = Rect {
-                            center: root,
-                            ..node_rect
-                        };
-
-                        let mut p0 = root;
-
-                        for (i, (p1, angle)) in self.bones.fk(root).enumerate() {
-                            self.rects[i] = Rect {
-                                size: Point2::new((p1 - p0).norm(), 0.005),
-                                angle,
-                                center: Point2::from((p0.coords + p1.coords) / 2.0),
-                                color: self.bone_color,
-                            };
-
-                            self.rects[self.bones.len() + 1 + i] = Rect {
-                                center: p1,
-                                ..node_rect
-                            };
-
-                            p0 = p1;
-                        }
-
-                        self.rects[2 * self.bones.len()].color = self.end_linkage_color;
-
-                        self.rects[2 * self.bones.len() + 1] = Rect {
-                            center: cursor,
-                            color: self.cursor_color,
-                            ..node_rect
-                        };
-                    }
-
-                    self.renderer.render(
-                        &self.rects,
-                        0,
-                        0..match self.root {
-                            Option::Some(_) => 2 * (self.bones.len() + 1),
-                            Option::None => 0,
-                        },
-                    )?;
-
-                    self.window.request_redraw();
-                    self.render_count += 1;
-
-                    let elapsed = self.start_instant.elapsed().as_secs_f32();
-
-                    if elapsed >= 1.0 {
-                        info!(fps = self.render_count as f32 / elapsed);
-                        self.start_instant = Instant::now();
-                        self.render_count = 0;
-                    }
-                },
-                _ => (),
+        match event {
+            WindowEvent::Resized(PhysicalSize {
+                width,
+                height,
+            }) => self.renderer.configure(Point2::new(width, height)),
+            WindowEvent::CloseRequested => {
+                info!("exit event loop");
+                event_loop.exit();
             },
-            false => warn!("unknown window"),
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(named_key),
+                        state: ElementState::Pressed,
+                        repeat: false,
+                        ..
+                    },
+                ..
+            } => match named_key {
+                NamedKey::Space => {
+                    self.mode = match self.mode {
+                        Mode::Edit => Mode::Follow,
+                        Mode::Follow => Mode::Edit,
+                    }
+                },
+                NamedKey::Backspace if matches!(self.mode, Mode::Edit) => {
+                    if self.bones.pop().is_none() && self.root.take().is_none() {
+                        debug!("there is no linkage");
+                    }
+                },
+                _ => {},
+            },
+            WindowEvent::CursorMoved {
+                position, ..
+            } => self.cursor = position,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } if matches!(self.mode, Mode::Edit) => match self.bones.len() < self.max_bones {
+                true => match self.root {
+                    Option::Some(root) => self.bones.push(self.bones.as_bone(root, self.cursor())),
+                    Option::None => self.root = Option::Some(self.cursor()),
+                },
+                false => debug!("buffer is full"),
+            },
+            WindowEvent::RedrawRequested => {
+                if let Option::Some(root) = self.root {
+                    let cursor = self.cursor();
+
+                    if matches!(self.mode, Mode::Follow) {
+                        for _ in 0..self.ik_steps {
+                            self.bones
+                                .ik(self.bones.as_bone(root, cursor), self.ik_sens);
+                        }
+                    }
+
+                    let node_rect = Rect {
+                        size: Point2::from(Vector2::repeat(0.02)),
+                        angle: 0.0,
+                        center: Point2::origin(),
+                        color: self.linkage_color,
+                    };
+
+                    self.rects[self.bones.len()] = Rect {
+                        center: root,
+                        ..node_rect
+                    };
+
+                    let mut p0 = root;
+
+                    for (i, (p1, angle)) in self.bones.fk(root).enumerate() {
+                        self.rects[i] = Rect {
+                            size: Point2::new((p1 - p0).norm(), 0.005),
+                            angle,
+                            center: Point2::from((p0.coords + p1.coords) / 2.0),
+                            color: self.bone_color,
+                        };
+
+                        self.rects[self.bones.len() + 1 + i] = Rect {
+                            center: p1,
+                            ..node_rect
+                        };
+
+                        p0 = p1;
+                    }
+
+                    self.rects[2 * self.bones.len()].color = self.end_linkage_color;
+
+                    self.rects[2 * self.bones.len() + 1] = Rect {
+                        center: cursor,
+                        color: self.cursor_color,
+                        ..node_rect
+                    };
+                }
+
+                self.renderer.render(
+                    &self.rects,
+                    0,
+                    0..match self.root {
+                        Option::Some(_) => 2 * (self.bones.len() + 1),
+                        Option::None => 0,
+                    },
+                )?;
+
+                self.window.request_redraw();
+                self.render_count += 1;
+
+                let elapsed = self.start_instant.elapsed().as_secs_f32();
+
+                if elapsed >= 1.0 {
+                    info!(fps = self.render_count as f32 / elapsed);
+                    self.start_instant = Instant::now();
+                    self.render_count = 0;
+                }
+            },
+            _ => (),
         }
 
         Result::Ok(())
@@ -689,9 +690,10 @@ impl Renderer {
 
     #[instrument(skip(self))]
     fn configure(&mut self, size: Point2<u32>) {
+        self.surface_config.width = size.x;
+        self.surface_config.height = size.y;
+
         if size.iter().copied().all(|x| x > 0) {
-            self.surface_config.width = size.x;
-            self.surface_config.height = size.y;
             self.surface.configure(&self.device, &self.surface_config);
         }
     }
@@ -703,6 +705,10 @@ impl Renderer {
         update_offset: usize,
         render_rects: Range<usize>,
     ) -> Result<()> {
+        if self.surface_config.width == 0 || self.surface_config.height == 0 {
+            return Result::Ok(());
+        }
+
         let mut encoder = self
             .device
             .create_command_encoder(&CommandEncoderDescriptor {
