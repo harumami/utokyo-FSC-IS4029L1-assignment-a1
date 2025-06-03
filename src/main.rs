@@ -366,22 +366,24 @@ impl Context {
                 false => debug!("buffer is full"),
             },
             WindowEvent::RedrawRequested => {
-                if let Option::Some(root) = self.root {
-                    let cursor = self.cursor();
+                let cursor = self.cursor();
 
+                let node_rect = Rect {
+                    size: Point2::from(Vector2::repeat(0.02)),
+                    angle: 0.0,
+                    center: Point2::origin(),
+                    color: self.linkage_color,
+                };
+
+                let mut cursor_index = 0;
+
+                if let Option::Some(root) = self.root {
                     if matches!(self.mode, Mode::Follow) {
                         for _ in 0..self.ik_steps {
                             self.bones
                                 .ik(self.bones.as_bone(root, cursor), self.ik_sens);
                         }
                     }
-
-                    let node_rect = Rect {
-                        size: Point2::from(Vector2::repeat(0.02)),
-                        angle: 0.0,
-                        center: Point2::origin(),
-                        color: self.linkage_color,
-                    };
 
                     self.rects[self.bones.len()] = Rect {
                         center: root,
@@ -407,20 +409,21 @@ impl Context {
                     }
 
                     self.rects[2 * self.bones.len()].color = self.end_linkage_color;
-
-                    self.rects[2 * self.bones.len() + 1] = Rect {
-                        center: cursor,
-                        color: self.cursor_color,
-                        ..node_rect
-                    };
+                    cursor_index = 2 * self.bones.len() + 1;
                 }
+
+                self.rects[cursor_index] = Rect {
+                    center: cursor,
+                    color: self.cursor_color,
+                    ..node_rect
+                };
 
                 self.renderer.render(
                     &self.rects,
                     0,
                     0..match self.root {
                         Option::Some(_) => 2 * (self.bones.len() + 1),
-                        Option::None => 0,
+                        Option::None => 1,
                     },
                 )?;
 
