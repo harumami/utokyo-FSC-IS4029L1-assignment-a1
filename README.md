@@ -68,4 +68,4 @@
 
 ### 0.mp4
 
-![bezier_mode.webp](demo/0.mp4)
+./demo/0.mp4
