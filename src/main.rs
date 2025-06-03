@@ -196,6 +196,7 @@ impl ApplicationHandler for App {
         if self.context.is_some() {
             return;
         }
+
         Self::handle_result(
             Context::new(
                 event_loop,
@@ -266,7 +267,7 @@ impl Context {
         flavor_colors: FlavorColors,
     ) -> Result<Self> {
         let window = Arc::new(event_loop.create_window(Default::default())?);
-        trace!("{window:?}");
+        trace!(?window);
         let cursor = Default::default();
         let mode = Mode::Edit;
         let root = Option::None;
@@ -547,9 +548,9 @@ impl Renderer {
             },
         });
 
-        trace!("{instance:?}");
+        trace!(?instance);
         let surface = instance.create_surface(window)?;
-        trace!("{surface:?}");
+        trace!(?surface);
 
         let adapter = block_on(instance.request_adapter(&RequestAdapterOptions {
             power_preference: PowerPreference::HighPerformance,
@@ -557,7 +558,7 @@ impl Renderer {
             compatible_surface: Option::Some(&surface),
         }))?;
 
-        trace!("{adapter:?}");
+        trace!(?adapter);
 
         let surface_config = surface
             .get_default_config(&adapter, 0, 0)
@@ -576,8 +577,8 @@ impl Renderer {
             trace: Trace::Off,
         }))?;
 
-        trace!("{device:?}");
-        trace!("{queue:?}");
+        trace!(?device);
+        trace!(?queue);
 
         let vertex_attributes = vertex_attr_array![
             0 => Float32x2,
@@ -596,7 +597,7 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
-        trace!("{staging_buffer:?}");
+        trace!(?staging_buffer);
 
         let vertex_buffer = device.create_buffer(&BufferDescriptor {
             label: Option::None,
@@ -605,7 +606,7 @@ impl Renderer {
             mapped_at_creation: false,
         });
 
-        trace!("{vertex_buffer:?}");
+        trace!(?vertex_buffer);
 
         let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
             label: Option::None,
@@ -616,9 +617,9 @@ impl Renderer {
             }],
         });
 
-        trace!("{pipeline_layout:?}");
+        trace!(?pipeline_layout);
         let module = device.create_shader_module(include_wgsl!("shader.wgsl"));
-        trace!("{module:?}");
+        trace!(?module);
 
         let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
             label: Option::None,
@@ -662,7 +663,7 @@ impl Renderer {
             cache: Option::None,
         });
 
-        trace!("{pipeline:?}");
+        trace!(?pipeline);
         let constant_buffer = vec![0; constant_layout.size];
         let clear_color = clear_color.cast();
 
@@ -715,14 +716,14 @@ impl Renderer {
                 label: Option::None,
             });
 
-        trace!("{encoder:?}");
+        trace!(?encoder);
 
         if !update_rects.is_empty() {
             let staging_slice = self
                 .staging_buffer
                 .slice(..(update_rects.len() * self.vertex_layout.size) as BufferAddress);
 
-            trace!("{staging_slice:?}");
+            trace!(?staging_slice);
             let (sender, receiver) = channel();
 
             staging_slice.map_async(MapMode::Write, move |result| {
@@ -775,7 +776,7 @@ impl Renderer {
         }
 
         let surface_texture = self.surface.get_current_texture()?;
-        trace!("{surface_texture:?}");
+        trace!(?surface_texture);
 
         let surface_view = surface_texture.texture.create_view(&TextureViewDescriptor {
             label: Option::None,
@@ -789,7 +790,7 @@ impl Renderer {
             array_layer_count: Option::None,
         });
 
-        trace!("{surface_view:?}");
+        trace!(?surface_view);
 
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             label: Option::None,
@@ -806,7 +807,7 @@ impl Renderer {
             occlusion_query_set: Option::None,
         });
 
-        trace!("{pass:?}");
+        trace!(?pass);
 
         if !render_rects.is_empty() {
             pass.set_pipeline(&self.pipeline);
