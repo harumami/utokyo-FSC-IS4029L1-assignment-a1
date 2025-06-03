@@ -130,6 +130,7 @@ use {
             NamedKey,
         },
         window::{
+            Fullscreen,
             Window,
             WindowId,
         },
@@ -344,6 +345,10 @@ impl Context {
                         debug!("there is no linkage");
                     }
                 },
+                NamedKey::F11 => self.window.set_fullscreen(match self.window.fullscreen() {
+                    Option::Some(_) => Option::None,
+                    Option::None => Option::Some(Fullscreen::Borderless(Option::None)),
+                }),
                 _ => {},
             },
             WindowEvent::CursorMoved {
