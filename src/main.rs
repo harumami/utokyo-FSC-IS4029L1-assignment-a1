@@ -1,8 +1,11 @@
 use {
     ::catppuccin::{
         Color as CColor,
+        FlavorColors,
+        FlavorName,
         PALETTE,
     },
+    ::clap::Parser,
     ::color_eyre::{
         eyre::{
             Context as _,
@@ -30,17 +33,22 @@ use {
             Arc,
             mpsc::channel,
         },
+        time::Instant,
     },
     ::tracing::{
+        debug,
         error,
         info,
         instrument,
-        metadata::Level,
+        level_filters::LevelFilter,
         trace,
         warn,
     },
     ::tracing_subscriber::{
-        fmt::Subscriber,
+        filter::EnvFilter,
+        fmt::Layer as FmtLayer,
+        layer::SubscriberExt as _,
+        registry::Registry,
         util::SubscriberInitExt as _,
     },
     ::wgpu::{
@@ -126,7 +134,6 @@ use {
             WindowId,
         },
     },
-    catppuccin::FlavorColors,
 };
 
 fn main() -> ExitCode {
@@ -137,23 +144,29 @@ fn main() -> ExitCode {
 }
 
 struct App {
+    args: Args,
     context: Option<Context>,
 }
 
 impl App {
     fn run() -> Result<()> {
         install_eyre()?;
+        let args = Args::parse();
 
-        Subscriber::builder()
-            .with_max_level(Level::TRACE)
-            .with_writer(stderr)
-            .finish()
+        Registry::default()
+            .with(FmtLayer::new().with_writer(stderr))
+            .with(
+                EnvFilter::builder()
+                    .with_default_directive(LevelFilter::INFO.into())
+                    .parse(&args.tracing_directives)?,
+            )
             .try_init()?;
 
         let event_loop = EventLoop::new()?;
         event_loop.set_control_flow(ControlFlow::Poll);
 
         let mut app = Self {
+            args,
             context: Option::None,
         };
 
@@ -182,8 +195,14 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.context.is_none() {
             Self::handle_result(
-                Context::new(event_loop, 16, PALETTE.latte.colors)
-                    .map(|context| self.context = Option::Some(context)),
+                Context::new(
+                    event_loop,
+                    self.args.max_bones,
+                    self.args.ik_steps,
+                    self.args.ik_sens,
+                    PALETTE[self.args.theme_flavor].colors,
+                )
+                .map(|context| self.context = Option::Some(context)),
             );
         }
     }
@@ -203,40 +222,81 @@ impl ApplicationHandler for App {
     }
 }
 
+#[derive(Parser)]
+struct Args {
+    #[clap(short = 'b', long, default_value_t = 8)]
+    max_bones: usize,
+    #[clap(short = 'n', long, default_value_t = 10)]
+    ik_steps: u32,
+    #[clap(short = 's', long, default_value_t = 0.2)]
+    ik_sens: f32,
+    #[clap(short = 'f', long, default_value = "latte")]
+    theme_flavor: FlavorName,
+    #[clap(short = 't', long, default_value = "")]
+    tracing_directives: String,
+}
+
 struct Context {
-    linkages: Vec<Vector2<f32>>,
-    max_linkages: usize,
     window: Arc<Window>,
     cursor: PhysicalPosition<f64>,
+    mode: Mode,
+    root: Option<Point2<f32>>,
+    bones: Bones,
+    max_bones: usize,
+    ik_steps: u32,
+    ik_sens: f32,
     renderer: Renderer,
     rects: Vec<Rect>,
-    arm_color: Point3<f32>,
+    bone_color: Point3<f32>,
+    linkage_color: Point3<f32>,
+    end_linkage_color: Point3<f32>,
+    cursor_color: Point3<f32>,
+    start_instant: Instant,
+    render_count: u32,
 }
 
 impl Context {
-    #[instrument]
+    #[instrument(skip(flavor_colors))]
     fn new(
         event_loop: &ActiveEventLoop,
-        max_linkages: usize,
+        max_bones: usize,
+        ik_steps: u32,
+        ik_sens: f32,
         flavor_colors: FlavorColors,
     ) -> Result<Self> {
         let window = Arc::new(event_loop.create_window(Default::default())?);
         trace!("{window:?}");
-        let max_rects = 2 * max_linkages - 1;
-        let renderer = Renderer::new(window.clone(), max_rects, Self::color(flavor_colors.base))?;
-        let linkages = Vec::with_capacity(max_linkages);
         let cursor = Default::default();
-        let rects = Vec::with_capacity(max_rects);
-        let arm_color = Self::color(flavor_colors.text);
+        let mode = Mode::Edit;
+        let root = Option::None;
+        let bones = Bones::new(max_bones);
+        let max_rects = 2 * (max_bones + 1);
+        let renderer = Renderer::new(window.clone(), max_rects, Self::color(flavor_colors.base))?;
+        let rects = vec![Default::default(); max_rects];
+        let bone_color = Self::color(flavor_colors.text);
+        let linkage_color = Self::color(flavor_colors.lavender);
+        let end_linkage_color = Self::color(flavor_colors.sky);
+        let cursor_color = Self::color(flavor_colors.maroon);
+        let start_instant = Instant::now();
+        let render_count = 0;
 
         Result::Ok(Self {
-            linkages,
-            max_linkages,
             window,
             cursor,
+            mode,
+            root,
+            bones,
+            max_bones,
+            ik_steps,
+            ik_sens,
             renderer,
             rects,
-            arm_color,
+            bone_color,
+            linkage_color,
+            end_linkage_color,
+            cursor_color,
+            start_instant,
+            render_count,
         })
     }
 
@@ -252,7 +312,7 @@ impl Context {
                 WindowEvent::Resized(PhysicalSize {
                     width,
                     height,
-                }) => self.renderer.configure(Scale2::new(width, height)),
+                }) => self.renderer.configure(Point2::new(width, height)),
                 WindowEvent::CloseRequested => {
                     info!("exit event loop");
                     event_loop.exit();
@@ -260,17 +320,25 @@ impl Context {
                 WindowEvent::KeyboardInput {
                     event:
                         KeyEvent {
-                            logical_key: Key::Named(NamedKey::Backspace),
+                            logical_key: Key::Named(named_key),
                             state: ElementState::Pressed,
                             repeat: false,
                             ..
                         },
                     ..
-                } => match self.linkages.is_empty() {
-                    true => info!("there are no linkages"),
-                    false => {
-                        self.linkages.pop();
+                } => match named_key {
+                    NamedKey::Space => {
+                        self.mode = match self.mode {
+                            Mode::Edit => Mode::Follow,
+                            Mode::Follow => Mode::Edit,
+                        }
                     },
+                    NamedKey::Backspace if matches!(self.mode, Mode::Edit) => {
+                        if self.bones.pop().is_none() && self.root.take().is_none() {
+                            debug!("there is no linkage");
+                        }
+                    },
+                    _ => {},
                 },
                 WindowEvent::CursorMoved {
                     position, ..
@@ -279,36 +347,84 @@ impl Context {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                     ..
-                } => match self.linkages.len() < self.max_linkages {
-                    true => {
-                        let window_size = self.window.inner_size();
-
-                        let window_size =
-                            Vector2::new(window_size.width, window_size.height).cast::<f32>();
-
-                        let position = (2.0
-                            * Vector2::new(self.cursor.x, self.cursor.y).cast::<f32>()
-                            - window_size)
-                            .component_mul(&Vector2::new(1.0, -1.0))
-                            / window_size.min();
-
-                        self.linkages.push(position);
+                } if matches!(self.mode, Mode::Edit) => match self.bones.len() < self.max_bones {
+                    true => match self.root {
+                        Option::Some(root) => {
+                            self.bones.push(self.bones.as_bone(root, self.cursor()))
+                        },
+                        Option::None => self.root = Option::Some(self.cursor()),
                     },
-                    false => info!("buffer is full"),
+                    false => debug!("buffer is full"),
                 },
                 WindowEvent::RedrawRequested => {
-                    for linkage in &self.linkages {
-                        self.rects.push(Rect {
-                            size: Scale2::new(0.03, 0.03),
-                            angle: Rotation2::new(0.0),
-                            center: Point2::from(*linkage),
-                            color: self.arm_color,
-                        })
+                    if let Option::Some(root) = self.root {
+                        let cursor = self.cursor();
+
+                        if matches!(self.mode, Mode::Follow) {
+                            for _ in 0..self.ik_steps {
+                                self.bones
+                                    .ik(self.bones.as_bone(root, cursor), self.ik_sens);
+                            }
+                        }
+
+                        let node_rect = Rect {
+                            size: Point2::from(Vector2::repeat(0.02)),
+                            angle: 0.0,
+                            center: Point2::origin(),
+                            color: self.linkage_color,
+                        };
+
+                        self.rects[self.bones.len()] = Rect {
+                            center: root,
+                            ..node_rect
+                        };
+
+                        let mut p0 = root;
+
+                        for (i, (p1, angle)) in self.bones.fk(root).enumerate() {
+                            self.rects[i] = Rect {
+                                size: Point2::new((p1 - p0).norm(), 0.005),
+                                angle,
+                                center: Point2::from((p0.coords + p1.coords) / 2.0),
+                                color: self.bone_color,
+                            };
+
+                            self.rects[self.bones.len() + 1 + i] = Rect {
+                                center: p1,
+                                ..node_rect
+                            };
+
+                            p0 = p1;
+                        }
+
+                        self.rects[2 * self.bones.len()].color = self.end_linkage_color;
+
+                        self.rects[2 * self.bones.len() + 1] = Rect {
+                            center: cursor,
+                            color: self.cursor_color,
+                            ..node_rect
+                        };
                     }
 
-                    self.renderer.render(&self.rects, 0, 0..self.rects.len())?;
-                    self.rects.clear();
+                    self.renderer.render(
+                        &self.rects,
+                        0,
+                        0..match self.root {
+                            Option::Some(_) => 2 * (self.bones.len() + 1),
+                            Option::None => 0,
+                        },
+                    )?;
+
                     self.window.request_redraw();
+                    self.render_count += 1;
+
+                    let elapsed = self.start_instant.elapsed().as_secs_f32();
+
+                    if elapsed >= 1.0 {
+                        info!(fps = self.render_count as f32 / elapsed);
+                        self.start_instant = Instant::now();
+                        self.render_count = 0;
+                    }
                 },
                 _ => (),
             },
@@ -318,9 +434,83 @@ impl Context {
         Result::Ok(())
     }
 
+    fn cursor(&self) -> Point2<f32> {
+        let window_size = self.window.inner_size();
+        let window_size = Vector2::new(window_size.width, window_size.height).cast::<f32>();
+
+        Point2::from(
+            (2.0 * Vector2::new(self.cursor.x, self.cursor.y).cast::<f32>() - window_size)
+                .component_mul(&Vector2::new(1.0, -1.0))
+                / window_size.min(),
+        )
+    }
+
     fn color(ccolor: CColor) -> Point3<f32> {
-        let rgb = ccolor.rgb;
-        Point3::new(rgb.r, rgb.g, rgb.b).cast() / u8::MAX as _
+        Point3::new(ccolor.rgb.r, ccolor.rgb.g, ccolor.rgb.b).cast() / u8::MAX as _
+    }
+}
+
+enum Mode {
+    Edit,
+    Follow,
+}
+
+struct Bones {
+    inner: Vec<Vector2<f32>>,
+}
+
+impl Bones {
+    fn new(capacity: usize) -> Self {
+        Self {
+            inner: Vec::with_capacity(capacity),
+        }
+    }
+
+    fn push(&mut self, bone: Vector2<f32>) {
+        self.inner.push(bone);
+    }
+
+    fn pop(&mut self) -> Option<Vector2<f32>> {
+        self.inner.pop()
+    }
+
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn fk(&self, mut root: Point2<f32>) -> impl Iterator<Item = (Point2<f32>, f32)> {
+        let mut angle = 0.0;
+
+        self.inner.iter().copied().map(move |bone| {
+            let vector = Rotation2::new(angle) * bone;
+            root += vector;
+            angle = Self::angle(vector);
+            (root, angle)
+        })
+    }
+
+    fn ik(&mut self, mut target: Vector2<f32>, sens: f32) {
+        let mut end_effector = Vector2::zeros();
+
+        for bone in self.inner.iter_mut().rev() {
+            end_effector = *bone + Rotation2::new(Self::angle(*bone)) * end_effector;
+            target = *bone + Rotation2::new(Self::angle(*bone)) * target;
+            let angle = sens * Self::angle_to(end_effector, target);
+            *bone = Rotation2::new(angle) * *bone;
+        }
+    }
+
+    fn as_bone(&self, root: Point2<f32>, end: Point2<f32>) -> Vector2<f32> {
+        let (vector, angle) = self.fk(root).last().unwrap_or((root, 0.0));
+        Rotation2::new(angle).inverse() * (end - vector)
+    }
+
+    fn angle_to(v0: Vector2<f32>, v1: Vector2<f32>) -> f32 {
+        f32::atan2(v0.perp(&v1), v0.dot(&v1))
+    }
+
+    fn angle(v: Vector2<f32>) -> f32 {
+        Self::angle_to(Vector2::new(1.0, 0.0), v)
     }
 }
 
@@ -498,9 +688,7 @@ impl Renderer {
     }
 
     #[instrument(skip(self))]
-    fn configure(&mut self, size: Scale2<u32>) {
-        let size = size * Point2::new(1, 1);
-
+    fn configure(&mut self, size: Point2<u32>) {
         if size.iter().copied().all(|x| x > 0) {
             self.surface_config.width = size.x;
             self.surface_config.height = size.y;
@@ -532,7 +720,7 @@ impl Renderer {
             let (sender, receiver) = channel();
 
             staging_slice.map_async(MapMode::Write, move |result| {
-                info!("receive a result of map_async");
+                debug!("receive a result of map_async");
 
                 if let Result::Err(error) = sender
                     .send(result)
@@ -547,8 +735,6 @@ impl Renderer {
             let mut staging_view = staging_slice.get_mapped_range_mut();
 
             for (index, rect) in update_rects.iter().enumerate() {
-                let scale = rect.size * 0.5;
-
                 for (field, point) in [Point2::new(1.0, 0.0), Point2::new(0.0, 1.0)]
                     .into_iter()
                     .enumerate()
@@ -557,15 +743,17 @@ impl Renderer {
                         &mut staging_view,
                         index,
                         field,
-                        &(rect.angle * (scale * point)),
+                        &(Rotation2::new(rect.angle)
+                            * (Scale2::from(0.5 * rect.size.coords) * point))
+                            .coords,
                     );
                 }
 
                 self.vertex_layout
-                    .write(&mut staging_view, index, 2, &rect.center);
+                    .write(&mut staging_view, index, 2, &rect.center.coords);
 
                 self.vertex_layout
-                    .write(&mut staging_view, index, 3, &rect.color);
+                    .write(&mut staging_view, index, 3, &rect.color.coords);
             }
 
             drop(staging_view);
@@ -723,9 +911,10 @@ struct StructFieldLayout {
     size: usize,
 }
 
+#[derive(Clone, Copy, Default)]
 struct Rect {
-    size: Scale2<f32>,
-    angle: Rotation2<f32>,
+    size: Point2<f32>,
+    angle: f32,
     center: Point2<f32>,
     color: Point3<f32>,
 }
